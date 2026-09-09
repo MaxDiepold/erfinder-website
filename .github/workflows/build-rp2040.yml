@@ -7,6 +7,12 @@ on:
       - "tools/**"
       - "web/**"
       - ".github/workflows/build-rp2040.yml"
+  pull_request:
+    paths:
+      - "tools/**"
+      - "web/**"
+      - ".github/workflows/build-rp2040.yml"
+      - "build-trigger.txt"
 
 permissions:
   contents: read
