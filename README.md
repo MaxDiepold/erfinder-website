@@ -1,6 +1,14 @@
 # ESP Phone Flasher V0.2
 ## iPhone → Adafruit Feather RP2040 USB Host → ESP32-C3
 
+### Fertige RP2040-Firmware
+
+Der Cloud-Build läuft auf Render und erzeugt die UF2 automatisch:
+
+- Build-Seite: https://esp-phone-flasher-build.onrender.com/
+- Direkte UF2: https://esp-phone-flasher-build.onrender.com/ESP-Phone-Flasher-Feather-RP2040.uf2
+- SHA256: https://esp-phone-flasher-build.onrender.com/SHA256SUMS.txt
+
 ### Empfehlung
 
 Für den ersten funktionierenden Aufbau verwenden wir den **Adafruit Feather RP2040 with USB Type A Host (Product 5723)**.
@@ -53,7 +61,7 @@ Für V0.2 wird der ESP32-C3 zunächst manuell in den ROM-Downloadmodus gebracht:
 
 ### Firmware für den Feather ohne PC bauen
 
-Das Projekt enthält einen GitHub-Actions-Workflow.
+Das Projekt enthält zusätzlich einen GitHub-Actions-Workflow.
 
 1. GitHub → **Actions**
 2. **Build ESP Phone Flasher**
@@ -118,4 +126,4 @@ V0.2 ist bewusst auf eine merged BIN optimiert, damit die Bedienung am iPhone si
 
 ### Status
 
-Die exakte Gesamtkette muss noch auf realer Hardware getestet werden.
+Die RP2040-Firmware kompiliert erfolgreich und wird als UF2 veröffentlicht. Die exakte Hardwarekette iPhone → Feather → ESP32-C3 muss nach dem Zusammenstecken noch praktisch validiert werden.
