@@ -1,0 +1,65 @@
+name: Build ESP Phone Flasher
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/**"
+      - "web/**"
+      - ".github/workflows/build-rp2040.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Phone Flasher project
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned Pico I/O Bridge
+        run: |
+          git clone https://github.com/ulso/pico-io-bridge.git upstream
+          git -C upstream checkout d6bf64f9d372f17fdc293f60eeb29d5152cb9d5c
+
+      - name: Add ESP Phone Flasher
+        run: |
+          python3 tools/patch_upstream.py upstream web/esp-flasher.html
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --target thumbv6m-none-eabi
+          rustup default 1.96.0
+
+      - name: Install ARM compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Install UF2 converter
+        run: |
+          cargo install elf2uf2-rs --version 2.2.0 --locked --no-default-features
+
+      - name: Build
+        working-directory: upstream
+        run: |
+          cargo build --locked --release --no-default-features \
+            --target thumbv6m-none-eabi \
+            --features board-adafruit-rp2040-usb-host
+
+      - name: Make UF2
+        run: |
+          mkdir -p dist
+          elf2uf2-rs \
+            upstream/target/thumbv6m-none-eabi/release/pico-io-bridge \
+            dist/ESP-Phone-Flasher-Feather-RP2040.uf2
+          sha256sum dist/ESP-Phone-Flasher-Feather-RP2040.uf2 > dist/SHA256SUMS.txt
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: ESP-Phone-Flasher-Feather-RP2040
+          path: dist/
+          if-no-files-found: error
