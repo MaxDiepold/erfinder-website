@@ -1,0 +1,21 @@
+{
+  "name": "ESP Phone Flasher",
+  "version": "0.2.0-prototype",
+  "recommended_board": "Adafruit Feather RP2040 with USB Type A Host",
+  "adafruit_product_id": 5723,
+  "target": "ESP32-C3",
+  "upstream": {
+    "repository": "ulso/pico-io-bridge",
+    "commit": "d6bf64f9d372f17fdc293f60eeb29d5152cb9d5c",
+    "feature": "board-adafruit-rp2040-usb-host"
+  },
+  "network": {
+    "device": "192.168.7.1/24",
+    "iphone_lease": "192.168.7.2/24"
+  },
+  "interfaces": {
+    "iphone": "native USB CDC-NCM",
+    "esp32": "PIO USB Host CDC-ACM",
+    "websocket": "/serial"
+  }
+}
