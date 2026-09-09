@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ESP Phone Flasher</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:light dark}
+*{box-sizing:border-box} body{margin:0;background:#f2f4f7;color:#17202a}
+main{max-width:720px;margin:auto;padding:18px}.card{background:#fff;border:1px solid #d8dee6;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 2px 10px #0000000d}
+h1{font-size:26px;margin:8px 0 4px}h2{font-size:17px;margin:0 0 12px}
+.small{font-size:13px;color:#647180;line-height:1.45}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.status{font-weight:700}.dot{width:11px;height:11px;border-radius:50%;display:inline-block;background:#c69222;margin-right:7px}
+.ok .dot{background:#1f9d55}.bad .dot{background:#d64545}button,input,select{font:inherit}
+button{border:0;border-radius:11px;padding:13px 16px;font-weight:750;background:#0a66e8;color:white;min-height:46px}
+button.secondary{background:#e8edf4;color:#17202a}button:disabled{opacity:.45}input[type=file]{width:100%}
+input[type=text],select{width:100%;padding:12px;border:1px solid #cdd5df;border-radius:10px;background:transparent}
+label{font-size:13px;font-weight:700;display:block;margin:12px 0 6px}progress{width:100%;height:16px}
+pre{white-space:pre-wrap;word-break:break-word;background:#10151b;color:#d7e0ea;border-radius:12px;padding:12px;min-height:160px;max-height:330px;overflow:auto;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.steps{padding-left:22px;line-height:1.55}.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef2f7;font-size:12px;font-weight:700}
+@media(prefers-color-scheme:dark){body{background:#0f141a;color:#eef3f8}.card{background:#171e26;border-color:#2c3947}.small{color:#aab6c3}.secondary{background:#293542!important;color:#eef3f8!important}.badge{background:#27323e}input[type=text],select{border-color:#405062}}
+</style>
+</head>
+<body>
+<main>
+<div class="badge">PROTOTYP 0.2 · ESP32-C3</div>
+<h1>ESP Phone Flasher</h1>
+<p class="small">iPhone → USB-C → Feather RP2040 USB Host → USB-A/C → ESP32-C3</p>
+
+<section class="card">
+<h2>1. Verbindung</h2>
+<div id="rpStatus" class="status"><span class="dot"></span>RP2040 wird geprüft …</div>
+<p id="usbStatus" class="small">USB-Host-Status wird geladen.</p>
+<div class="row"><button id="connectBtn">ESP verbinden</button><button id="disconnectBtn" class="secondary" disabled>Trennen</button></div>
+</section>
+
+<section class="card">
+<h2>2. Downloadmodus</h2>
+<ol class="steps small"><li>BOOT am ESP32-C3 gedrückt halten.</li><li>RESET kurz drücken.</li><li>RESET loslassen.</li><li>BOOT loslassen.</li><li>Dann synchronisieren.</li></ol>
+<button id="syncBtn" class="secondary" disabled>Synchronisieren</button>
+</section>
+
+<section class="card">
+<h2>3. Firmware</h2>
+<label>BIN-Datei</label><input id="file" type="file" accept=".bin,application/octet-stream">
+<label>Flash-Adresse</label><input id="offset" type="text" value="0x0">
+<label>Flash-Größe</label>
+<select id="flashSize"><option value="2097152">2 MB</option><option value="4194304" selected>4 MB</option><option value="8388608">8 MB</option><option value="16777216">16 MB</option></select>
+<p class="small">Für einen leeren ESP32-C3 eine <b>merged BIN</b> ab <b>0x0</b> verwenden. Eine reine Sketch-BIN bei 0x10000 setzt vorhandenen Bootloader und Partitionstabelle voraus.</p>
+<button id="flashBtn" disabled>FLASH STARTEN</button>
+<label>Fortschritt</label><progress id="progress" max="100" value="0"></progress><div id="progressText" class="small">0 %</div>
+</section>
+
+<section class="card"><h2>Protokoll</h2><pre id="log"></pre></section>
+</main>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const logEl=$("log"),rpStatus=$("rpStatus"),usbStatus=$("usbStatus"),connectBtn=$("connectBtn"),disconnectBtn=$("disconnectBtn"),syncBtn=$("syncBtn"),flashBtn=$("flashBtn"),fileEl=$("file"),offsetEl=$("offset"),flashSizeEl=$("flashSize"),progress=$("progress"),progressText=$("progressText");
+function log(s){const t=new Date().toLocaleTimeString();logEl.textContent+=`${t}  ${s}\n`;logEl.scrollTop=logEl.scrollHeight}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+function hx(n,w=2){return Number(n>>>0).toString(16).toUpperCase().padStart(w,"0")}
+function words(...values){const out=new Uint8Array(values.length*4),d=new DataView(out.buffer);values.forEach((v,i)=>d.setUint32(i*4,v>>>0,true));return out}
+function concat(...arrays){let n=arrays.reduce((s,a)=>s+a.length,0),o=new Uint8Array(n),p=0;for(const a of arrays){o.set(a,p);p+=a.length}return o}
+function parseOffset(s){const q=s.trim(),v=Number.parseInt(q,q.toLowerCase().startsWith("0x")?16:10);if(!Number.isFinite(v)||v<0)throw new Error("Ungültige Flash-Adresse");return v>>>0}
+
+class SerialBridge{
+ constructor(){this.ws=null;this.rx=[];this.waiters=[]}
+ async connect(){
+  if(this.ws&&this.ws.readyState===1)return;
+  const url=`ws://${location.host}/serial`;log(`WebSocket ${url}`);
+  await new Promise((resolve,reject)=>{
+   const ws=new WebSocket(url);ws.binaryType="arraybuffer";this.ws=ws;
+   const to=setTimeout(()=>{try{ws.close()}catch{};reject(new Error("Verbindungs-Timeout"))},6000);
+   ws.onopen=()=>{clearTimeout(to);resolve()};
+   ws.onerror=()=>{clearTimeout(to);reject(new Error("WebSocket-Fehler"))};
+   ws.onmessage=async e=>{
+    if(typeof e.data==="string"){log(`< ${e.data}`);return}
+    const ab=e.data instanceof Blob?await e.data.arrayBuffer():e.data,a=new Uint8Array(ab);
+    for(const b of a)this.rx.push(b);this.waiters.splice(0).forEach(f=>f());
+   };
+   ws.onclose=()=>{this.waiters.splice(0).forEach(f=>f());setConnected(false)};
+  });
+  setConnected(true);log("USB-Seriell-Brücke verbunden ✓");
+ }
+ close(){if(this.ws)this.ws.close();this.ws=null;this.rx=[];setConnected(false)}
+ async write(bytes){
+  if(!this.ws||this.ws.readyState!==1)throw new Error("Serielle Brücke nicht verbunden");
+  for(let i=0;i<bytes.length;i+=512){this.ws.send(bytes.slice(i,i+512));while(this.ws.bufferedAmount>4096)await sleep(2)}
+ }
+ wake(){return new Promise(r=>this.waiters.push(r))}
+ async readSlip(timeout=5000){
+  const end=Date.now()+timeout;
+  while(Date.now()<end){
+   let start=this.rx.indexOf(0xC0);
+   if(start>=0){
+    if(start>0)this.rx.splice(0,start);
+    const stop=this.rx.indexOf(0xC0,1);
+    if(stop>=0){
+     const enc=this.rx.slice(1,stop);this.rx.splice(0,stop+1);if(!enc.length)continue;
+     const out=[];
+     for(let i=0;i<enc.length;i++){if(enc[i]===0xDB){i++;if(i>=enc.length)throw new Error("Ungültiges SLIP-Escape");if(enc[i]===0xDC)out.push(0xC0);else if(enc[i]===0xDD)out.push(0xDB);else throw new Error("Ungültiges SLIP-Escape")}else out.push(enc[i])}
+     return new Uint8Array(out);
+    }
+   }else if(this.rx.length>8192)this.rx.splice(0,this.rx.length-1024);
+   await Promise.race([this.wake(),sleep(Math.min(100,Math.max(1,end-Date.now())))]);
+  }
+  throw new Error("Antwort-Timeout");
+ }
+}
+const bridge=new SerialBridge();
+function setConnected(on){connectBtn.disabled=on;disconnectBtn.disabled=!on;syncBtn.disabled=!on;flashBtn.disabled=!on}
+function slipEncode(data){const o=[0xC0];for(const b of data){if(b===0xC0)o.push(0xDB,0xDC);else if(b===0xDB)o.push(0xDB,0xDD);else o.push(b)}o.push(0xC0);return new Uint8Array(o)}
+function checksum(data){let c=0xEF;for(const b of data)c^=b;return c>>>0}
+
+async function command(op,data=new Uint8Array(0),check=0,timeout=5000,expect=true){
+ const h=new Uint8Array(8),v=new DataView(h.buffer);h[0]=0;h[1]=op;v.setUint16(2,data.length,true);v.setUint32(4,check>>>0,true);
+ await bridge.write(slipEncode(concat(h,data)));if(!expect)return null;
+ const until=Date.now()+timeout;
+ while(Date.now()<until){
+  const frame=await bridge.readSlip(Math.max(1,until-Date.now()));if(frame.length<8||frame[0]!==1||frame[1]!==op)continue;
+  const dv=new DataView(frame.buffer,frame.byteOffset,frame.byteLength),size=dv.getUint16(2,true),value=dv.getUint32(4,true);if(frame.length<8+size)continue;
+  const payload=frame.slice(8,8+size);
+  if(size>=4){const st=payload[size-4],err=payload[size-3];if(st!==0)throw new Error(`ESP Fehler op=0x${hx(op)} status=${st} code=0x${hx(err)}`)}
+  return{value,payload};
+ }
+ throw new Error(`Timeout bei Befehl 0x${hx(op)}`);
+}
+
+async function syncEsp(){
+ log("Synchronisiere ESP32-C3 ROM …");
+ const sync=concat(new Uint8Array([0x07,0x07,0x12,0x20]),new Uint8Array(32).fill(0x55));let last;
+ for(let i=0;i<7;i++){try{const r=await command(0x08,sync,0,1200);log("ESP32-C3 antwortet auf SYNC ✓");return r}catch(e){last=e;await sleep(80)}}
+ throw last||new Error("Keine SYNC-Antwort");
+}
+async function prepareFlash(flashSize){
+ await syncEsp();log("SPI Flash anbinden …");await command(0x0D,words(0,0),0,3000);
+ log(`SPI Parameter: ${flashSize/1048576} MB`);await command(0x0B,words(0,flashSize,0x10000,0x1000,0x100,0xFFFF),0,3000);
+}
+function trimTrailingFF(bytes){let n=bytes.length;while(n>0&&bytes[n-1]===0xFF)n--;return bytes.slice(0,n||bytes.length)}
+
+async function flashImage(bytes,offset,flashSize){
+ const BLOCK=1024,source=trimTrailingFF(bytes);if(source.length!==bytes.length)log(`Trailing 0xFF gekürzt: ${bytes.length} → ${source.length} Bytes`);
+ if(offset+source.length>flashSize)throw new Error("Firmware passt nicht in gewählte Flash-Größe.");
+ await prepareFlash(flashSize);
+ const blocks=Math.ceil(source.length/BLOCK),paddedSize=blocks*BLOCK;
+ log(`FLASH_BEGIN: ${blocks} Blöcke, ${source.length} Bytes, Offset 0x${hx(offset,8)}`);
+ await command(0x02,words(paddedSize,blocks,BLOCK,offset,0),0,12000);
+ const pad=new Uint8Array(BLOCK).fill(0xFF);
+ for(let seq=0;seq<blocks;seq++){
+  const begin=seq*BLOCK,end=Math.min(begin+BLOCK,source.length);pad.fill(0xFF);pad.set(source.slice(begin,end),0);
+  await command(0x03,concat(words(BLOCK,seq,0,0),pad),checksum(pad),6000);
+  const pct=Math.round(((seq+1)/blocks)*100);progress.value=pct;progressText.textContent=`${pct} % · Block ${seq+1}/${blocks}`;if(seq%64===0||seq===blocks-1)log(`Flash ${pct} %`);
+ }
+ log("Flash-Daten geschrieben ✓");log("Berechne lokale MD5 …");const local=md5(source);log(`MD5 lokal: ${local}`);
+ log("ESP berechnet Flash-MD5 …");const md=await command(0x13,words(offset,source.length,0,0),0,15000),data=md.payload.length>=4?md.payload.slice(0,-4):md.payload;
+ let remote="";if(data.length>=32)remote=String.fromCharCode(...data.slice(0,32)).toLowerCase();else if(data.length>=16)remote=Array.from(data.slice(0,16),b=>hx(b)).join("").toLowerCase();
+ log(`MD5 ESP:   ${remote||"(nicht auswertbar)"}`);if(remote&&remote!==local)throw new Error("MD5 stimmt NICHT überein. Firmware nicht starten.");if(remote)log("MD5 stimmt überein ✓");
+ log("FLASH_END / Neustart …");try{await command(0x04,words(0),0,1500,true)}catch(e){log("USB nach Neustart getrennt – erwartbar.")}
+ progress.value=100;progressText.textContent="100 % · Fertig";log("FERTIG ✓ ESP32-C3 programmiert.");
+}
+
+function md5(input){
+ const len=input.length,bitLen=len*8,paddedLen=(((len+8)>>>6)+1)*64,msg=new Uint8Array(paddedLen);msg.set(input);msg[len]=0x80;
+ const dv=new DataView(msg.buffer),lo=bitLen>>>0,hi=Math.floor(bitLen/0x100000000)>>>0;dv.setUint32(paddedLen-8,lo,true);dv.setUint32(paddedLen-4,hi,true);
+ let a0=0x67452301,b0=0xefcdab89,c0=0x98badcfe,d0=0x10325476;
+ const s=[7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+ const K=Array.from({length:64},(_,i)=>Math.floor(Math.abs(Math.sin(i+1))*4294967296)>>>0),rol=(x,n)=>((x<<n)|(x>>>(32-n)))>>>0;
+ for(let off=0;off<paddedLen;off+=64){const M=new Uint32Array(16);for(let i=0;i<16;i++)M[i]=dv.getUint32(off+i*4,true);let A=a0,B=b0,C=c0,D=d0;
+  for(let i=0;i<64;i++){let F,g;if(i<16){F=(B&C)|((~B)&D);g=i}else if(i<32){F=(D&B)|((~D)&C);g=(5*i+1)%16}else if(i<48){F=B^C^D;g=(3*i+5)%16}else{F=C^(B|(~D));g=(7*i)%16}
+   const sum=(A+(F>>>0)+K[i]+M[g])>>>0,next=(B+rol(sum,s[i]))>>>0;A=D;D=C;C=B;B=next}
+  a0=(a0+A)>>>0;b0=(b0+B)>>>0;c0=(c0+C)>>>0;d0=(d0+D)>>>0}
+ const out=[];for(const w of [a0,b0,c0,d0])for(let i=0;i<4;i++)out.push((w>>>(8*i))&255);return out.map(b=>hx(b)).join("").toLowerCase();
+}
+
+async function refreshStatus(){
+ try{const r=await fetch("/api/usb-host/status",{cache:"no-store"}),s=await r.json();rpStatus.className="status ok";rpStatus.innerHTML='<span class="dot"></span>RP2040 online';
+  const vid=s.vendorId==null?"-":"0x"+hx(s.vendorId,4),pid=s.productId==null?"-":"0x"+hx(s.productId,4);usbStatus.textContent=`USB Host: ${s.phase||"-"} · VID ${vid} · PID ${pid} · RX ${s.rxBytes||0} · TX ${s.txBytes||0}`;
+ }catch(e){rpStatus.className="status bad";rpStatus.innerHTML='<span class="dot"></span>RP2040 nicht erreichbar';usbStatus.textContent=e.message}
+}
+connectBtn.onclick=async()=>{try{await bridge.connect()}catch(e){log("FEHLER: "+e.message)}};
+disconnectBtn.onclick=()=>bridge.close();
+syncBtn.onclick=async()=>{syncBtn.disabled=true;try{await syncEsp()}catch(e){log("FEHLER: "+e.message)}finally{syncBtn.disabled=false}};
+flashBtn.onclick=async()=>{const f=fileEl.files&&fileEl.files[0];if(!f){log("FEHLER: BIN-Datei auswählen.");return}flashBtn.disabled=true;syncBtn.disabled=true;progress.value=0;progressText.textContent="0 %";
+ try{const bytes=new Uint8Array(await f.arrayBuffer()),offset=parseOffset(offsetEl.value),flashSize=Number(flashSizeEl.value);log(`Datei: ${f.name} · ${bytes.length} Bytes`);await flashImage(bytes,offset,flashSize)}
+ catch(e){log("FEHLER: "+e.message)}finally{flashBtn.disabled=false;syncBtn.disabled=false}};
+fileEl.onchange=()=>{const f=fileEl.files&&fileEl.files[0];if(f)log(`Ausgewählt: ${f.name} (${f.size} Bytes)`)};
+log("ESP Phone Flasher bereit.");refreshStatus();setInterval(refreshStatus,2000);
+</script>
+</body>
+</html>
