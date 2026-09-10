@@ -22,6 +22,12 @@ if missing:
     raise RuntimeError(f"missing V0.3 UI chunks: {missing}")
 encoded = "".join(p.read_text().strip() for p in parts)
 html = base64.b64decode(encoded, validate=True)
+old_css = b'.clear-btn{border:1px solid #3a5065;'
+new_css = b'.clear-btn{min-height:44px;border:1px solid #3a5065;'
+if old_css in html:
+    html = html.replace(old_css, new_css, 1)
+elif new_css not in html:
+    raise RuntimeError("clear button CSS marker missing")
 out = upstream / "src" / "esp_flasher.html"
 out.write_bytes(html)
 print(f"Installed ESP Phone Flasher V0.3 UI: {len(html)} bytes")
